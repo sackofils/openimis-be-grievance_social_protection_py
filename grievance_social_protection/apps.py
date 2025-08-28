@@ -21,9 +21,22 @@ DEFAULT_CFG = {
     "gql_mutation_resolve_grievance_perms": ["127006"],
     "tickets_attachments_root_path": None,
 
-    "grievance_types": [DEFAULT_STRING, 'Category A', 'Category B'],
-    "grievance_flags": [DEFAULT_STRING, 'Flag A', 'Flag B'],
-    "grievance_channels": [DEFAULT_STRING, 'Channel A', 'Channel B'],
+    "grievance_types": [
+        DEFAULT_STRING,
+        'Cas sensibles',
+        'Cas speciaux',
+        'Cas non sensibles'
+    ],
+    "grievance_categories": {DEFAULT_STRING: DEFAULT_STRING},
+    "grievance_sub_categories": {DEFAULT_STRING: DEFAULT_STRING},
+    "grievance_flags": [DEFAULT_STRING],
+    "grievance_channels": [
+        DEFAULT_STRING,
+        'Réclamations écrites transmises au Comité de Gestion de Réclamations',
+        'Réclamations orales',
+        'Dépôt de lettre dans une boîte de réclamation',
+        'Appel téléphonique'
+    ],
     "default_responses": {DEFAULT_STRING: DEFAULT_STRING},
     "grievance_anonymized_fields": {DEFAULT_STRING: []},
     # CRON timedelta: {days},{hours}
@@ -48,6 +61,8 @@ class TicketConfig(AppConfig):
     tickets_attachments_root_path = None
 
     grievance_types = []
+    grievance_categories = []
+    grievance_sub_categories = {}
     grievance_flags = []
     grievance_channels = []
     default_responses = {}

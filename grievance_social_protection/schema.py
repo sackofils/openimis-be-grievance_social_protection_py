@@ -131,6 +131,7 @@ class Mutation(graphene.ObjectType):
 
     resolve_grievance_by_comment = ResolveGrievanceByCommentMutation.Field()
     reopen_ticket = ReopenTicketMutation.Field()
+    escalate_ticket = EscalateTicketMutation.Field()
 
     # create_ticket_attachment = CreateTicketAttachmentMutation.Field()
     # update_ticket_attachment = UpdateTicketAttachmentMutation.Field()

@@ -8,6 +8,8 @@ from graphql import ResolveInfo
 import core
 from core import models as core_models
 from core.models import HistoryBusinessModel, User, HistoryModel
+from location.models import Location
+from django.contrib.auth.models import Group
 
 
 def check_if_user_or_individual(generic_field):
@@ -15,6 +17,41 @@ def check_if_user_or_individual(generic_field):
     beneficiary = apps.get_model('social_protection', 'Beneficiary')
     if not isinstance(generic_field, (User, individual, beneficiary)):
         raise ValueError('Reporter must be either a User or a Beneficiary or an Individual.')
+
+class EscalationWorkflow(models.Model):
+    """
+    Un workflow identifié (ex: 'default-sensitive', 'default-non-sensitive').
+    On peut le sélectionner par sensibilité ou par slug de catégorie si nécessaire.
+    """
+    name = models.CharField(max_length=128, unique=True)
+    is_sensitive = models.BooleanField(default=False)  # True => plaintes sensibles
+    category_slug = models.CharField(
+        max_length=128, blank=True, null=True,
+        help_text="Optionnel: pour cibler une catégorie précise (slug)."
+    )
+    active = models.BooleanField(default=True)
+
+    def __str__(self):
+        tag = "sensible" if self.is_sensitive else "non sensible"
+        return f"{self.name} ({tag})"
+
+
+class EscalationStep(models.Model):
+    """
+    Une étape d’escalade: rôle cible (groupe) + SLA (jours).
+    L’ordre détermine la progression de l’escalade.
+    """
+    workflow = models.ForeignKey(EscalationWorkflow, on_delete=models.CASCADE, related_name="steps")
+    order = models.PositiveIntegerField(help_text="Ordre d’escalade (0, 1, 2, ...)")
+    group = models.ForeignKey(Group, on_delete=models.PROTECT, help_text="Groupe/role assigné (ex: CGR, AC, RAC, ETM, DEVOPS)")
+    sla_days = models.PositiveIntegerField(default=0, help_text="Délai (jours) pour cette étape")
+
+    class Meta:
+        unique_together = (("workflow", "order"),)
+        ordering = ("workflow", "order")
+
+    def __str__(self):
+        return f"{self.workflow.name} [{self.order}] -> {self.group.name} ({self.sla_days} j)"
 
 
 class Ticket(HistoryBusinessModel):
@@ -29,7 +66,7 @@ class Ticket(HistoryBusinessModel):
     key = models.TextField(null=True, blank=True)
     title = models.CharField(max_length=255, blank=True, null=True)
     description = models.TextField(max_length=255, blank=True, null=True)
-    code = models.CharField(max_length=16, unique=True, blank=True, null=True)
+    code = models.CharField(max_length=16, unique=True, blank=True, null=True)  # ← mappe id_plainte_generer
 
     reporter_type = models.ForeignKey(ContentType, on_delete=models.DO_NOTHING, null=True, blank=True)
     reporter_id = models.CharField(max_length=255, null=True, blank=True)
@@ -44,9 +81,36 @@ class Ticket(HistoryBusinessModel):
     due_date = models.DateField(blank=True, null=True)
 
     category = models.CharField(max_length=255, blank=True, null=True)
+    sub_category = models.CharField(max_length=255, blank=True, null=True)
+    sub_category_level1 = models.CharField(max_length=255, blank=True, null=True)
     flags = models.CharField(max_length=255, blank=True, null=True)
     channel = models.CharField(max_length=255, blank=True, null=True)
     resolution = models.CharField(max_length=255, blank=True, null=True)
+
+    # Localisation par FK (déjà chez toi)
+    region = models.ForeignKey(Location, null=True, blank=True, on_delete=models.SET_NULL,
+                               related_name="tickets_region")
+    prefecture = models.ForeignKey(Location, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name="tickets_prefecture")
+    sous_prefecture = models.ForeignKey(Location, null=True, blank=True, on_delete=models.SET_NULL,
+                                        related_name="tickets_sous_prefecture")
+    district = models.ForeignKey(Location, null=True, blank=True, on_delete=models.SET_NULL,
+                                 related_name="tickets_district")
+
+    # ménage / référence bénéficiaire
+    household_code = models.CharField(max_length=64, blank=True, null=True, db_index=True)
+
+    # infos déclarant (si pas résolues via GenericFK)
+    reporter_name = models.CharField(max_length=128, blank=True, null=True)
+    reporter_phone = models.CharField(max_length=64, blank=True, null=True)
+
+    escalation_level = models.PositiveSmallIntegerField(default=0, db_index=True)
+    max_escalation_level = models.PositiveSmallIntegerField(default=3)  # plafond d’escalade
+    last_escalated_at = models.DateTimeField(null=True, blank=True)
+    escalation_log = models.JSONField(default=list, blank=True)  # trace des étapes
+
+    # stockage des champs annexes/“non mappés”
+    json_ext = models.JSONField(default=dict, blank=True)
 
     def clean(self):
         super().clean()
@@ -54,8 +118,7 @@ class Ticket(HistoryBusinessModel):
             check_if_user_or_individual(self.reporter)
 
     def __str__(self):
-        return f"{self.title}"
-
+        return f"{self.title or self.code or self.pk}"
 
     @classmethod
     def filter_queryset(cls, queryset=None):
@@ -108,6 +171,86 @@ class Comment(HistoryModel):
 
             if existing_resolved_comments.exists():
                 raise ValueError("Another comment for this ticket is already marked as resolved.")
+
+class GrievanceChannel(models.Model):
+    code = models.CharField(max_length=64, unique=True)
+    name = models.CharField(max_length=255)
+    order = models.PositiveIntegerField(default=0)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ("order", "name")
+
+    def __str__(self):
+        return f"{self.code} — {self.name}"
+
+class GrievanceFlag(models.Model):
+    code = models.CharField(max_length=64, unique=True)
+    name = models.CharField(max_length=255)
+    order = models.PositiveIntegerField(default=0)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ("order", "name")
+
+    def __str__(self):
+        return f"{self.code} — {self.name}"
+
+class GrievanceType(models.Model):
+    """
+    Niveau 1 (ex: cas_sensible, cas_non_sensible, cas_speciaux)
+    """
+    code = models.CharField(max_length=64, unique=True)
+    name = models.CharField(max_length=255)
+    is_sensitive = models.BooleanField(default=False)
+    order = models.PositiveIntegerField(default=0)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ("order", "name")
+
+    def __str__(self):
+        return f"{self.code} — {self.name}"
+
+
+class GrievanceCategory(models.Model):
+    """
+    Niveau 2 (ex: pour cas_non_sensible → téléphone, paiement, etc.)
+    """
+    parent = models.ForeignKey(
+        GrievanceType, on_delete=models.CASCADE, related_name="grievance_types"
+    )
+    code = models.CharField(max_length=64)
+    name = models.CharField(max_length=255)
+    order = models.PositiveIntegerField(default=0)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        unique_together = (("parent", "code"),)
+        ordering = ("parent__order", "order", "name")
+
+    def __str__(self):
+        return f"{self.parent.code}/{self.code} — {self.name}"
+
+
+class GrievanceSubCategory(models.Model):
+    """
+    Niveau 3 (ex: pour téléphone → perdu, défectueux, etc.)
+    """
+    parent = models.ForeignKey(
+        GrievanceCategory, on_delete=models.CASCADE, related_name="grievance_sub_categories"
+    )
+    code = models.CharField(max_length=64)
+    name = models.CharField(max_length=255)
+    order = models.PositiveIntegerField(default=0)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        unique_together = (("parent", "code"),)
+        ordering = ("parent__parent__order", "parent__order", "order", "name")
+
+    def __str__(self):
+        return f"{self.parent.parent.code}/{self.parent.code}/{self.code} — {self.name}"
 
 
 # LEFT IF NEEDED IN THE FUTURE

@@ -7,7 +7,7 @@ from django.utils.translation import gettext as _
 
 from core.gql_queries import UserGQLType
 from .apps import TicketConfig
-from .models import Ticket, Comment
+from .models import (Ticket, Comment, GrievanceType, GrievanceCategory, GrievanceSubCategory, GrievanceFlag, GrievanceChannel)
 
 from core import prefix_filterset, ExtendedConnection
 from .util import model_obj_to_json
@@ -250,22 +250,96 @@ class ResolutionTimesByCategoryGQLType(ObjectType):
     category = graphene.String()
     resolution_time = graphene.String()
 
+class CategoriesByTypeGQLType(ObjectType):
+    type = graphene.String()
+    categories = graphene.List(graphene.String)
+
+class SubCategoriesByCategoryGQL(ObjectType):
+    category = graphene.String()
+    sub_categories = graphene.List(graphene.String)
+
+class GrievanceSubCategoryGQL(DjangoObjectType):
+    class Meta:
+        model = GrievanceSubCategory
+        fields = ("id", "code", "name", "order", "active")
+
+class GrievanceCategoryGQL(DjangoObjectType):
+    subCategories = graphene.List(GrievanceSubCategoryGQL)
+
+    class Meta:
+        model = GrievanceCategory
+        fields = ("id", "code", "name", "order", "active", "parent")
+
+    def resolve_subCategories(self, info):
+        return self.sub_categories.filter(active=True).order_by("order", "name")
+
+class GrievanceTypeGQL(DjangoObjectType):
+    subTypes = graphene.List(GrievanceCategoryGQL)
+
+    class Meta:
+        model = GrievanceType
+        fields = ("id", "code", "name", "is_sensitive", "order", "active")
+
+    def resolve_subTypes(self, info):
+        return self.sub_types.filter(active=True).order_by("order", "name")
+
+class GrievanceFlagGQL(DjangoObjectType):
+    class Meta:
+        model = GrievanceFlag
+        fields = ("id", "code", "name", "order", "active")
 
 class GrievanceTypeConfigurationGQLType(ObjectType):
     grievance_types = graphene.List(graphene.String)
+    grievance_categories = graphene.List(CategoriesByTypeGQLType)
+    grievance_sub_categories = graphene.List(SubCategoriesByCategoryGQL)
     grievance_flags = graphene.List(graphene.String)
     grievance_channels = graphene.List(graphene.String)
     grievance_category_staff_roles = graphene.List(AttendingStaffRoleGQLType)
     grievance_default_resolutions_by_category = graphene.List(ResolutionTimesByCategoryGQLType)
 
     def resolve_grievance_types(self, info):
-        return TicketConfig.grievance_types
+        return list(GrievanceType.objects.filter(active=True).order_by("order").values_list("name", flat=True))
 
     def resolve_grievance_flags(self, info):
-        return TicketConfig.grievance_flags
+        return list(GrievanceFlag.objects.filter(active=True).order_by("order").values_list("name", flat=True)) or TicketConfig.grievance_flags
+
+    def resolve_grievance_categories(self, info):
+        types = list(
+            GrievanceType.objects
+            .filter(active=True)
+            .order_by("order", "name")
+        )
+        cats = (
+            GrievanceCategory.objects
+            .select_related("parent")
+            .filter(active=True, parent__active=True)
+            .order_by("parent__order", "order", "name")
+        )
+        # index par type_id
+        by_type = {t.id: [] for t in types}
+        for c in cats:
+            by_type.setdefault(c.parent_id, []).append(c.name)
+        return [CategoriesByTypeGQLType(type=t.name, categories=by_type.get(t.id, [])) for t in types]
+
+    def resolve_grievance_sub_categories(self, info):
+        cats = list(
+            GrievanceCategory.objects
+            .filter(active=True, parent__active=True)
+            .order_by("parent__order", "order", "name")
+        )
+        subs = (
+            GrievanceSubCategory.objects
+            .select_related("parent", "parent__parent")
+            .filter(active=True, parent__active=True, parent__parent__active=True)
+            .order_by("parent__parent__order", "parent__order", "order", "name")
+        )
+        by_cat = {c.id: [] for c in cats}
+        for sc in subs:
+            by_cat.setdefault(sc.parent_id, []).append(sc.name)
+        return [SubCategoriesByCategoryGQL(category=c.name, sub_categories=by_cat.get(c.id, [])) for c in cats]
 
     def resolve_grievance_channels(self, info):
-        return TicketConfig.grievance_channels
+        return list(GrievanceChannel.objects.filter(active=True).order_by("order").values_list("name", flat=True)) or TicketConfig.grievance_channels
 
     def resolve_grievance_category_staff_roles(self, info):
         category_staff_role_list = []

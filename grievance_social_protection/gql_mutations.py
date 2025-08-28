@@ -32,6 +32,8 @@ class CreateTicketInputType(OpenIMISMutation.Input):
     priority = graphene.String(required=False)
     due_date = graphene.Date(required=False)
     category = graphene.String(required=True)
+    sub_category = graphene.String(required=False)
+    sub_category_level1 = graphene.String(required=False)
     flags = graphene.String(required=False)
     channel = graphene.String(required=False)
     resolution = graphene.String(required=False)
@@ -44,6 +46,8 @@ class UpdateTicketInputType(CreateTicketInputType):
 class ResolveGrievanceByCommentInputType(OpenIMISMutation.Input):
     id = graphene.UUID(required=True)
 
+class EscalateTicketInputType(OpenIMISMutation.Input):
+    id = graphene.UUID(required=True)
 
 class CreateCommentInputType(OpenIMISMutation.Input):
     ticket_id = graphene.UUID(required=True)
@@ -219,7 +223,7 @@ class ReopenTicketMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation):
         if client_mutation_id:
             ticket_id = data.get('id')
             ticket = Ticket.objects.get(id=ticket_id)
-            TicketMutation.object_mutated(user, client_mutation_id=client_mutation_id, Ticket=ticket)
+            TicketMutation.object_mutated(user, client_mutation_id=client_mutation_id, ticket=ticket)
 
         if not response['success']:
             return response
@@ -227,6 +231,45 @@ class ReopenTicketMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation):
 
     class Input(ResolveGrievanceByCommentInputType):
         pass
+
+class EscalateTicketMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation):
+    _mutation_class = "EscalateTicketMutation"
+    _mutation_module = "grievance_social_protection"
+    _model = Ticket
+
+    @classmethod
+    def _validate_mutation(cls, user, **data):
+        super()._validate_mutation(user, **data)
+        # même permission que pour update (à adapter si tu veux une perm spécifique)
+        if not user.has_perms(TicketConfig.gql_mutation_update_tickets_perms):
+            raise ValidationError(_("mutation.authentication_required"))
+
+    @classmethod
+    def _mutate(cls, user, **data):
+        client_mutation_id = data.pop('client_mutation_id', None)
+        if "client_mutation_label" in data:
+            data.pop('client_mutation_label')
+
+        service = TicketService(user)
+        response = service.escalate_ticket(data)
+
+        # Journalisation (bus d’événements)
+        if client_mutation_id:
+            try:
+                ticket_id = data.get('id') or (response.get('data') or {}).get('id')
+                if ticket_id:
+                    ticket = Ticket.objects.get(id=ticket_id)
+                    TicketMutation.object_mutated(user, client_mutation_id=client_mutation_id, ticket=ticket)
+            except Exception:
+                pass
+
+        if not response.get('success'):
+            return response
+        return None
+
+    class Input(EscalateTicketInputType):
+        pass
+
 
 # class CreateTicketAttachmentMutation(OpenIMISMutation):
 #     _mutation_module = "grievance_social_protection"
