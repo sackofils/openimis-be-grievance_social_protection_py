@@ -5,12 +5,17 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.db import transaction
 from django.core.exceptions import ValidationError
-from grievance_social_protection.helpers.escalation import (ROUTE_SENSITIVE, ROUTE_NON_SENSITIVE, SLA_NON_SENSITIVE, SLA_SENSITIVE)
 from grievance_social_protection.models import Ticket, GrievanceType
 
 from django.conf import settings
 
 User = get_user_model()
+
+ROUTE_SENSITIVE:  list[str] = ["ETM", "DEVOPS"]
+SLA_SENSITIVE:    list[int] = [1, 1]  # jours / niveau
+
+ROUTE_NON_SENSITIVE: list[str] = ["CGR", "AC", "RAC", "ETM", "DEVOPS"]
+SLA_NON_SENSITIVE:   list[int] = [2, 2, 3, 3, 5]
 
 # ————————————————————————————————————————————————————————————————
 # Détection sensible / non sensible
