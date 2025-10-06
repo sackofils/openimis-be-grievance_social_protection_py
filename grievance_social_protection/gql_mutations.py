@@ -37,6 +37,7 @@ class CreateTicketInputType(OpenIMISMutation.Input):
     flags = graphene.String(required=False)
     channel = graphene.String(required=False)
     resolution = graphene.String(required=False)
+    # json_ext = GenericScalar(required=False)
 
 
 class UpdateTicketInputType(CreateTicketInputType):

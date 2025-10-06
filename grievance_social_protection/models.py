@@ -10,6 +10,7 @@ from core import models as core_models
 from core.models import HistoryBusinessModel, User, HistoryModel
 from location.models import Location
 from django.contrib.auth.models import Group
+from django.utils.translation import gettext_lazy as _
 
 
 def check_if_user_or_individual(generic_field):
@@ -52,7 +53,6 @@ class EscalationStep(models.Model):
 
     def __str__(self):
         return f"{self.workflow.name} [{self.order}] -> {self.group.name} ({self.sla_days} j)"
-
 
 class Ticket(HistoryBusinessModel):
     class TicketStatus(models.TextChoices):

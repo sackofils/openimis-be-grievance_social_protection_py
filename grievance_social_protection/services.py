@@ -1,6 +1,6 @@
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
-from django.db.models import Max
+from django.db.models import Max, Q
 from django.db import transaction
 
 from core.services import BaseService
@@ -13,11 +13,14 @@ from grievance_social_protection.validations import (
     CommentValidation,
     validate_resolution
 )
+from grievance_social_protection.escalation_services import (ROUTE_SENSITIVE, ROUTE_NON_SENSITIVE, SLA_NON_SENSITIVE, SLA_SENSITIVE)
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from functools import lru_cache
 from .models import EscalationWorkflow, EscalationStep
+
+from location.models import Location, extend_allowed_locations
 
 User = get_user_model()
 
@@ -94,11 +97,11 @@ class TicketService(BaseService):
 
     # ----- Helpers: chaîne d’escalade & choix de l’assigné -----
     @lru_cache(maxsize=128)
-    def _load_workflow(self, is_sensitive: bool, category_slug: str | None) -> EscalationWorkflow | None:
+    def _load_workflow(self, is_sensitive: bool, category: str | None) -> EscalationWorkflow | None:
         qs = EscalationWorkflow.objects.filter(active=True)
         # Priorité: correspondance exacte de catégorie si fournie
-        if category_slug:
-            wf = qs.filter(category_slug__iexact=category_slug).first()
+        if category:
+            wf = qs.filter(name__iexact=category).first()
             if wf:
                 return wf
         # Sinon fallback sur is_sensitive (par défaut)
@@ -125,9 +128,9 @@ class TicketService(BaseService):
         cat = ticket.category
         type = GrievanceType.objects.get(name__iexact=cat)
         if type.is_sensitive:
-            names = ["ETM", "DEVOPS"]
+            names = ROUTE_SENSITIVE
         else:
-            names = ["CGR", "AC", "RAC", "ETM", "DEVOPS"]
+            names = ROUTE_NON_SENSITIVE
         steps = []
         for name in names:
             grp = Group.objects.filter(name=name).first()
@@ -157,12 +160,76 @@ class TicketService(BaseService):
         group, sla_days = steps[next_index]
         return group, sla_days, next_index, meta
 
+    def _most_specific_location_from_ticket(ticket):
+        """
+        Retourne la localité la plus précise disponible sur le ticket.
+        Ordre : district -> sous_prefecture -> prefecture -> region.
+        """
+        for fname in ("district", "sous_prefecture", "prefecture", "region"):
+            if hasattr(ticket, fname):
+                loc = getattr(ticket, fname, None)
+                if loc:
+                    return loc
+        return None
+
+    def _district_from_any_location(loc):
+        """
+        Si 'loc' est déjà un district (type 'D') => le retourne.
+        Sinon, remonte la hiérarchie pour retrouver le parent de type 'D'.
+        """
+        if not loc:
+            return None
+        if getattr(loc, "type", None) == "D":
+            return loc
+        # remonte les parents (utilise le CTE de LocationManager)
+        parents = Location.objects.parents(loc.id, loc_type="D")
+        return parents[0] if parents else None
+
+    def _covers_location(user, target_loc):
+        """
+        Vérifie si 'user' couvre la localité cible (ou ses enfants),
+        en utilisant l’algorithme openIMIS: allowed_ids + extend_allowed_locations(strict=False).
+        ATTENTION: 'User' ici doit être l'utilisateur interactif (openIMIS).
+        """
+        try:
+            allowed_ids = Location.objects.get_allowed_ids(user, strict=True)
+            covered_ids = set(extend_allowed_locations(list(allowed_ids), strict=False))
+            return target_loc.id in covered_ids
+        except Exception:
+            return False
+
     def _choose_assignee(self, group: Group, ticket):
         """
-        Choix simple: 1er user actif du groupe.
-        Tu peux filtrer ici selon la région/préfecture du ticket si dispo sur User.
+        Assigne un utilisateur du groupe en fonction de la localité du ticket.
+        Stratégie :
+          1) si on peut déterminer le district du ticket → chercher un user du groupe lié à ce district (UserDistrict)
+          2) sinon, filtrer les users du groupe dont la couverture (allowed locations) inclut la localité du ticket
+          3) fallback : premier user actif du groupe
         """
-        return User.objects.filter(groups=group).order_by("id").first()
+        base_qs = User.objects.filter(groups=group)
+
+        # 1) district direct si possible
+        target_loc = TicketService._most_specific_location_from_ticket(ticket)
+        target_district = TicketService._district_from_any_location(target_loc)
+        if target_district:
+            # NOTE : reverse query name par défaut = 'userdistrict' (classe UserDistrict)
+            candidates = (
+                base_qs.filter(userdistrict__location=target_district)
+                .order_by("-last_login", "id")
+                .distinct()
+            )
+            if candidates.exists():
+                return candidates.first()
+
+        # 2) couverture réelle par allowed locations (prend en compte enfants/parents selon strict=False)
+        if target_loc:
+            # On priorise les users récemment actifs
+            for u in base_qs.order_by("-last_login", "id"):
+                if TicketService._covers_location(u, target_loc):
+                    return u
+
+        # 3) fallback
+        return base_qs.order_by("id").first()
 
     @register_service_signal("ticket_service.escalate_ticket")
     @check_authentication

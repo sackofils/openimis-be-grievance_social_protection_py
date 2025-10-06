@@ -296,6 +296,7 @@ class GrievanceTypeConfigurationGQLType(ObjectType):
     grievance_channels = graphene.List(graphene.String)
     grievance_category_staff_roles = graphene.List(AttendingStaffRoleGQLType)
     grievance_default_resolutions_by_category = graphene.List(ResolutionTimesByCategoryGQLType)
+    kobo_ticket_form_url = graphene.String()
 
     def resolve_grievance_types(self, info):
         return list(GrievanceType.objects.filter(active=True).order_by("order").values_list("name", flat=True))
@@ -362,3 +363,15 @@ class GrievanceTypeConfigurationGQLType(ObjectType):
             category_resolution_time_list.append(category_resolution_time)
 
         return category_resolution_time_list
+
+    def resolve_kobo_ticket_form_url(self, info):
+        """Renvoie l’URL du KoboForm actif pour les tickets"""
+        try:
+            from kobo_connect.models import KoboForm
+            form = KoboForm.objects.filter(is_active=True, module="grievance_social_protection").first()
+            if form and form.form_uid:
+                # return f"{form.api_key.url_kobo.rstrip('/')}/x/{form.form_uid}"
+                return f"https://ee-eu.kobotoolbox.org/x/{form.form_uid}"
+        except Exception:
+            pass
+        return None
