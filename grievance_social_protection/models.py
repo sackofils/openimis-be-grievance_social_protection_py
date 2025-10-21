@@ -7,7 +7,7 @@ from graphql import ResolveInfo
 
 import core
 from core import models as core_models
-from core.models import HistoryBusinessModel, User, HistoryModel
+from core.models import HistoryBusinessModel, User, HistoryModel, Role
 from location.models import Location
 from django.contrib.auth.models import Group
 from django.utils.translation import gettext_lazy as _
@@ -44,7 +44,7 @@ class EscalationStep(models.Model):
     """
     workflow = models.ForeignKey(EscalationWorkflow, on_delete=models.CASCADE, related_name="steps")
     order = models.PositiveIntegerField(help_text="Ordre d’escalade (0, 1, 2, ...)")
-    group = models.ForeignKey(Group, on_delete=models.PROTECT, help_text="Groupe/role assigné (ex: CGR, AC, RAC, ETM, DEVOPS)")
+    role = models.ForeignKey(Role, null=True, on_delete=models.PROTECT, help_text="Groupe/role assigné (ex: CGR, AC, RAC, ETM, DEVOPS)")
     sla_days = models.PositiveIntegerField(default=0, help_text="Délai (jours) pour cette étape")
 
     class Meta:
@@ -52,7 +52,7 @@ class EscalationStep(models.Model):
         ordering = ("workflow", "order")
 
     def __str__(self):
-        return f"{self.workflow.name} [{self.order}] -> {self.group.name} ({self.sla_days} j)"
+        return f"{self.workflow.name} [{self.order}] -> {self.role.name} ({self.sla_days} j)"
 
 class Ticket(HistoryBusinessModel):
     class TicketStatus(models.TextChoices):
@@ -87,15 +87,8 @@ class Ticket(HistoryBusinessModel):
     channel = models.CharField(max_length=255, blank=True, null=True)
     resolution = models.CharField(max_length=255, blank=True, null=True)
 
-    # Localisation par FK (déjà chez toi)
-    region = models.ForeignKey(Location, null=True, blank=True, on_delete=models.SET_NULL,
-                               related_name="tickets_region")
-    prefecture = models.ForeignKey(Location, null=True, blank=True, on_delete=models.SET_NULL,
-                                   related_name="tickets_prefecture")
-    sous_prefecture = models.ForeignKey(Location, null=True, blank=True, on_delete=models.SET_NULL,
-                                        related_name="tickets_sous_prefecture")
-    district = models.ForeignKey(Location, null=True, blank=True, on_delete=models.SET_NULL,
-                                 related_name="tickets_district")
+    location = models.ForeignKey(Location, null=True, blank=True, on_delete=models.DO_NOTHING,
+                               related_name="tickets_location")
 
     # ménage / référence bénéficiaire
     household_code = models.CharField(max_length=64, blank=True, null=True, db_index=True)
@@ -224,6 +217,7 @@ class GrievanceCategory(models.Model):
     name = models.CharField(max_length=255)
     order = models.PositiveIntegerField(default=0)
     active = models.BooleanField(default=True)
+    workflow = models.JSONField(default=dict, null=True)
 
     class Meta:
         unique_together = (("parent", "code"),)

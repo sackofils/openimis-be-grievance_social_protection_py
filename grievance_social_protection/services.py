@@ -1,3 +1,6 @@
+import json
+import uuid
+import datetime
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.db.models import Max, Q
@@ -5,6 +8,7 @@ from django.db import transaction
 
 from core.services import BaseService
 from core.signals import register_service_signal
+from core.models.user import Role, UserRole, InteractiveUser, User
 from core.services.utils import check_authentication as check_authentication, output_exception, \
     model_representation, output_result_success
 from grievance_social_protection.models import Ticket, Comment, GrievanceType
@@ -13,14 +17,9 @@ from grievance_social_protection.validations import (
     CommentValidation,
     validate_resolution
 )
-from grievance_social_protection.escalation_services import (ROUTE_SENSITIVE, ROUTE_NON_SENSITIVE, SLA_NON_SENSITIVE, SLA_SENSITIVE)
-from django.utils import timezone
+from grievance_social_protection.escalation_helper import (escalate_ticket)
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import Group
-from functools import lru_cache
-from .models import EscalationWorkflow, EscalationStep
 
-from location.models import Location, extend_allowed_locations
 
 User = get_user_model()
 
@@ -94,143 +93,6 @@ class TicketService(BaseService):
             new_ticket_code = f'GRS{last_ticket_code_numeric + 1:08}'
             obj_data['code'] = new_ticket_code
 
-
-    # ----- Helpers: chaîne d’escalade & choix de l’assigné -----
-    @lru_cache(maxsize=128)
-    def _load_workflow(self, is_sensitive: bool, category: str | None) -> EscalationWorkflow | None:
-        qs = EscalationWorkflow.objects.filter(active=True)
-        # Priorité: correspondance exacte de catégorie si fournie
-        if category:
-            wf = qs.filter(name__iexact=category).first()
-            if wf:
-                return wf
-        # Sinon fallback sur is_sensitive (par défaut)
-        return qs.filter(category_slug__isnull=True, is_sensitive=is_sensitive).first()
-
-    def _get_escalation_from_db(self, ticket):
-        """
-        Retourne (steps, comment) :
-          - steps: liste [(Group, sla_days), ...]
-          - comment: texte pour log/debug
-        Si rien en BDD => None
-        """
-        cat = ticket.category
-        type = GrievanceType.objects.get(name__iexact=cat)
-        is_sensitive = type.is_sensitive
-        wf = self._load_workflow(is_sensitive, cat or None)
-        if not wf:
-            return None
-        steps = [(s.group, s.sla_days) for s in wf.steps.all().order_by("order")]
-        return steps, f"workflow={wf.name}"
-
-    def _fallback_chain(self, ticket):
-        """Chaîne codée en dur (sécurité si pas de config)."""
-        cat = ticket.category
-        type = GrievanceType.objects.get(name__iexact=cat)
-        if type.is_sensitive:
-            names = ROUTE_SENSITIVE
-        else:
-            names = ROUTE_NON_SENSITIVE
-        steps = []
-        for name in names:
-            grp = Group.objects.filter(name=name).first()
-            if grp:
-                steps.append((grp, 0))  # SLA=0 par défaut si fallback
-        return steps, "fallback"
-
-    def _next_step(self, ticket):
-        """
-        Détermine la prochaine étape d’escalade:
-          - lit les steps BDD si dispo sinon fallback
-          - lit json_ext.workflow.escalation_level pour connaître la position
-        Retourne (group, sla_days, level, meta_label)
-        """
-        cfg = self._get_escalation_from_db(ticket)
-        if not cfg:
-            steps, meta = self._fallback_chain(ticket)
-        else:
-            steps, meta = cfg
-
-        json_ext = getattr(ticket, "json_ext", {}) or {}
-        wf = json_ext.get("workflow", {}) or {}
-        level = wf.get("escalation_level", -1)
-        next_index = level + 1
-        if next_index >= len(steps):
-            raise ValidationError("Maximum escalation level reached")
-        group, sla_days = steps[next_index]
-        return group, sla_days, next_index, meta
-
-    def _most_specific_location_from_ticket(ticket):
-        """
-        Retourne la localité la plus précise disponible sur le ticket.
-        Ordre : district -> sous_prefecture -> prefecture -> region.
-        """
-        for fname in ("district", "sous_prefecture", "prefecture", "region"):
-            if hasattr(ticket, fname):
-                loc = getattr(ticket, fname, None)
-                if loc:
-                    return loc
-        return None
-
-    def _district_from_any_location(loc):
-        """
-        Si 'loc' est déjà un district (type 'D') => le retourne.
-        Sinon, remonte la hiérarchie pour retrouver le parent de type 'D'.
-        """
-        if not loc:
-            return None
-        if getattr(loc, "type", None) == "D":
-            return loc
-        # remonte les parents (utilise le CTE de LocationManager)
-        parents = Location.objects.parents(loc.id, loc_type="D")
-        return parents[0] if parents else None
-
-    def _covers_location(user, target_loc):
-        """
-        Vérifie si 'user' couvre la localité cible (ou ses enfants),
-        en utilisant l’algorithme openIMIS: allowed_ids + extend_allowed_locations(strict=False).
-        ATTENTION: 'User' ici doit être l'utilisateur interactif (openIMIS).
-        """
-        try:
-            allowed_ids = Location.objects.get_allowed_ids(user, strict=True)
-            covered_ids = set(extend_allowed_locations(list(allowed_ids), strict=False))
-            return target_loc.id in covered_ids
-        except Exception:
-            return False
-
-    def _choose_assignee(self, group: Group, ticket):
-        """
-        Assigne un utilisateur du groupe en fonction de la localité du ticket.
-        Stratégie :
-          1) si on peut déterminer le district du ticket → chercher un user du groupe lié à ce district (UserDistrict)
-          2) sinon, filtrer les users du groupe dont la couverture (allowed locations) inclut la localité du ticket
-          3) fallback : premier user actif du groupe
-        """
-        base_qs = User.objects.filter(groups=group)
-
-        # 1) district direct si possible
-        target_loc = TicketService._most_specific_location_from_ticket(ticket)
-        target_district = TicketService._district_from_any_location(target_loc)
-        if target_district:
-            # NOTE : reverse query name par défaut = 'userdistrict' (classe UserDistrict)
-            candidates = (
-                base_qs.filter(userdistrict__location=target_district)
-                .order_by("-last_login", "id")
-                .distinct()
-            )
-            if candidates.exists():
-                return candidates.first()
-
-        # 2) couverture réelle par allowed locations (prend en compte enfants/parents selon strict=False)
-        if target_loc:
-            # On priorise les users récemment actifs
-            for u in base_qs.order_by("-last_login", "id"):
-                if TicketService._covers_location(u, target_loc):
-                    return u
-
-        # 3) fallback
-        return base_qs.order_by("id").first()
-
     @register_service_signal("ticket_service.escalate_ticket")
     @check_authentication
     def escalate_ticket(self, obj_data):
@@ -241,48 +103,7 @@ class TicketService(BaseService):
                     raise ValidationError("Missing 'id' for escalation")
 
                 ticket = Ticket.objects.get(id=ticket_id)
-
-                # Détermine la prochaine étape
-                target_group, sla_days, next_level, meta = self._next_step(ticket)
-                assignee = self._choose_assignee(target_group, ticket)
-
-                # Affectation & statut
-                if hasattr(ticket, "attending_staff"):
-                    ticket.attending_staff = assignee
-                try:
-                    if ticket.status in [Ticket.TicketStatus.RECEIVED, Ticket.TicketStatus.OPEN]:
-                        ticket.status = Ticket.TicketStatus.IN_PROGRESS
-                except Exception:
-                    pass
-
-                # Due date = aujourd’hui + SLA de l’étape
-                if hasattr(ticket, "due_date") and sla_days and sla_days > 0:
-                    ticket.due_date = timezone.now().date() + timezone.timedelta(days=sla_days)
-
-                # Workflow JSON
-                json_ext = getattr(ticket, "json_ext", {}) or {}
-                wf = json_ext.get("workflow", {}) or {}
-                now = timezone.now()
-                history = wf.get("history", [])
-                history.append({
-                    "at": now.isoformat(),
-                    "by": getattr(self.user, "username", None),
-                    "to_role": target_group.name if target_group else None,
-                    "to_user_id": getattr(assignee, "id", None),
-                    "source": meta,  # 'workflow=<name>' ou 'fallback'
-                    "sla_days": sla_days,
-                })
-                wf.update({
-                    "assignee_role": target_group.name if target_group else None,
-                    "escalation_level": next_level,
-                    "last_escalated_at": now.isoformat(),
-                    "history": history,
-                })
-                json_ext["workflow"] = wf
-                if hasattr(ticket, "json_ext"):
-                    ticket.json_ext = json_ext
-
-                ticket.save(username=self.user.username)
+                ticket = escalate_ticket(ticket, username=self.user.username)
                 return output_result_success(dict_representation=model_representation(ticket))
 
         except Exception as exc:

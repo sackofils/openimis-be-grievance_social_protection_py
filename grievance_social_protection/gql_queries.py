@@ -4,6 +4,7 @@ from graphene_django import DjangoObjectType
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import PermissionDenied
 from django.utils.translation import gettext as _
+from location.gql_queries import LocationGQLType
 
 from core.gql_queries import UserGQLType
 from .apps import TicketConfig
@@ -125,6 +126,7 @@ class TicketGQLType(DjangoObjectType):
             "due_date": ["exact", "istartswith", "icontains", "iexact"],
             "date_of_incident": ["exact", "istartswith", "icontains", "iexact"],
             "date_created": ["exact", "istartswith", "icontains", "iexact"],
+            **prefix_filterset("location__", LocationGQLType._meta.filter_fields),
             **prefix_filterset("attending_staff__", UserGQLType._meta.filter_fields),
         }
 
@@ -268,7 +270,7 @@ class GrievanceCategoryGQL(DjangoObjectType):
 
     class Meta:
         model = GrievanceCategory
-        fields = ("id", "code", "name", "order", "active", "parent")
+        fields = ("id", "code", "name", "order", "active", "parent", "workflow")
 
     def resolve_subCategories(self, info):
         return self.sub_categories.filter(active=True).order_by("order", "name")

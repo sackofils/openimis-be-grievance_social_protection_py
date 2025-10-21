@@ -41,7 +41,7 @@ DEFAULT_CFG = {
     "grievance_anonymized_fields": {DEFAULT_STRING: []},
     # CRON timedelta: {days},{hours}
     "resolution_times": DEFAULT_TIME_RESOLUTION,
-    "default_resolution": {DEFAULT_STRING: DEFAULT_TIME_RESOLUTION, 'Category A': '4,0', 'Category B': '6,12'},
+    "default_resolution": {DEFAULT_STRING: DEFAULT_TIME_RESOLUTION},
 
     "attending_staff_role_ids": [],
     "default_attending_staff_role_ids": {DEFAULT_STRING: [1, 2]},

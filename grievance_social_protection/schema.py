@@ -60,27 +60,41 @@ class Query(graphene.ObjectType):
 
     def resolve_tickets(self, info, **kwargs):
         """
-        Extra steps to perform when Scheme is queried
+        Récupère la liste des tickets avec filtrage dynamique :
+        - Si l'utilisateur n'est pas admin : affiche uniquement
+          les tickets qui lui sont assignés ou sur lesquels il est intervenu.
         """
-        # Check if user has permission
-        if not info.context.user.has_perms(TicketConfig.gql_query_tickets_perms):
+        user = info.context.user
+
+        # Vérification des permissions
+        if not user.has_perms(TicketConfig.gql_query_tickets_perms):
             raise PermissionDenied(_("unauthorized"))
+
         filters = []
         model = Ticket
 
-        client_mutation_id = kwargs.get("client_mutation_id", None)
+        # Filtrage par mutation ID (si fourni)
+        client_mutation_id = kwargs.get("client_mutation_id")
         if client_mutation_id:
             filters.append(Q(mutations__mutation__client_mutation_id=client_mutation_id))
 
-        # Used to specify if user want to see all records including invalid records as history
-        show_history = kwargs.get('show_history', False)
-        ticket_version = kwargs.get('ticket_version', False)
+        # Gestion de l'historique
+        show_history = kwargs.get("show_history", False)
+        ticket_version = kwargs.get("ticket_version", False)
+
         if show_history or ticket_version:
             if ticket_version:
                 filters.append(Q(version=ticket_version))
             query = model.history.filter(*filters).all().as_instances()
         else:
             query = model.objects.filter(*filters, is_deleted=False).all()
+
+        # --- Filtrage par utilisateur connecté ---
+        if not user.is_superuser:
+            query = query.filter(
+                Q(attending_staff=user)
+                | Q(comments__commenter_id=user.id)
+            ).distinct()
 
         return gql_optimizer.query(query, info)
 
