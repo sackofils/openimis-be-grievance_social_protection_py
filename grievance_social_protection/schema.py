@@ -12,7 +12,8 @@ from .apps import MODULE_NAME
 from .gql_queries import *
 from .gql_mutations import *
 from django.utils.translation import gettext_lazy as _
-
+from django.db.models.expressions import RawSQL
+from django.core.exceptions import PermissionDenied
 
 
 class Query(graphene.ObjectType):
@@ -60,25 +61,24 @@ class Query(graphene.ObjectType):
 
     def resolve_tickets(self, info, **kwargs):
         """
-        Récupère la liste des tickets avec filtrage dynamique :
-        - Si l'utilisateur n'est pas admin : affiche uniquement
-          les tickets qui lui sont assignés ou sur lesquels il est intervenu.
+        Récupère la liste des tickets filtrés selon :
+        - Rôles (CNGR, RAC, ETM, DEVOPS) : accès complet
+        - Autres : tickets assignés, commentés, ou impliquant l'utilisateur dans le JSON workflow
         """
         user = info.context.user
 
-        # Vérification des permissions
+        # Vérif permission GraphQL
         if not user.has_perms(TicketConfig.gql_query_tickets_perms):
             raise PermissionDenied(_("unauthorized"))
 
         filters = []
         model = Ticket
 
-        # Filtrage par mutation ID (si fourni)
+        # Filtrage de base
         client_mutation_id = kwargs.get("client_mutation_id")
         if client_mutation_id:
             filters.append(Q(mutations__mutation__client_mutation_id=client_mutation_id))
 
-        # Gestion de l'historique
         show_history = kwargs.get("show_history", False)
         ticket_version = kwargs.get("ticket_version", False)
 
@@ -89,12 +89,31 @@ class Query(graphene.ObjectType):
         else:
             query = model.objects.filter(*filters, is_deleted=False).all()
 
-        # --- Filtrage par utilisateur connecté ---
-        if not user.is_superuser:
-            query = query.filter(
-                Q(attending_staff=user)
-                | Q(comments__commenter_id=user.id)
-            ).distinct()
+        # --- Récupération des rôles de l'utilisateur ---
+        roles = list(user.user_roles.values_list("role__name", flat=True)) if hasattr(user, "user_roles") else []
+        user_roles_str = [r.upper() for r in roles]
+
+        # Rôles ayant un accès complet
+        full_access_roles = {"CNGR", "DEVOPS", "SAUVEGARDES"}
+
+        # --- Application du filtrage par rôle ---
+        if not user.is_superuser and not (set(user_roles_str) & full_access_roles):
+            username = user.login_name
+            fullname = f"{user.other_names} {user.last_name}".strip()
+
+            # Tickets directement liés à l'utilisateur
+            q_user = Q(attending_staff=user) #| Q(comments__commenter=user)
+
+            # Tickets où l'utilisateur ou son rôle apparaît dans le workflow JSON
+            q_json = Q(json_ext__workflow__history__contains=[{"to_user_id": str(user.uuid)}])
+
+            # Ajout de chaque rôle utilisateur dans le filtre JSON
+            #for role_name in user_roles_str:
+            #    q_json |= Q(json_ext__workflow__assignee_role = role_name)
+            #    q_json |= Q(json_ext__workflow__history__contains=[{"to_role": role_name}])
+
+            # Combinaison globale
+            query = query.filter(q_user | q_json).distinct()
 
         return gql_optimizer.query(query, info)
 
