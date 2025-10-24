@@ -18,7 +18,7 @@ if 'opensearch_reports' in apps.app_configs and not is_unit_test_env:
         title = opensearch_fields.KeywordField()
         description = opensearch_fields.KeywordField()
         code = opensearch_fields.KeywordField()
-        attending_staff = opensearch_fields.KeywordField()
+        # attending_staff = opensearch_fields.KeywordField()
         status = opensearch_fields.KeywordField()
         category = opensearch_fields.KeywordField()
         sub_category = opensearch_fields.KeywordField()
@@ -65,7 +65,7 @@ if 'opensearch_reports' in apps.app_configs and not is_unit_test_env:
                         hierarchy["region"] = current.name
                     elif current.type == "D":
                         hierarchy["prefecture"] = current.name
-                    elif current.type == "C":
+                    elif current.type == "W":
                         hierarchy["sous_prefecture"] = current.name
                     elif current.type == "V":
                         hierarchy["district"] = current.name

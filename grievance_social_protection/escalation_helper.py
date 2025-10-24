@@ -230,11 +230,13 @@ def escalate_ticket(ticket: Ticket, username="Admin"):
             wf = json_ext.get("workflow", {}) or {}
             now = timezone.now()
             history = wf.get("history", [])
+            user_id = make_json_serializable(getattr(assignee, "id", None))
+            fullnname = assignee.i_user.get_full_name() if assignee and assignee.i_user else ''
             history.append({
                 "at": now.isoformat(),
                 "by": username,
                 "to_role": target_group.name if target_group else None,
-                "to_user_id": getattr(assignee, "id", None),
+                "to_user_id": user_id,
                 "to_user_fullname": assignee.i_user.get_full_name() if assignee and assignee.i_user else '',
                 "source": meta,  # 'workflow=<name>' ou 'fallback'
                 "sla_days": sla_days,
