@@ -216,7 +216,7 @@ def escalate_ticket(ticket: Ticket, username="Admin"):
             if hasattr(ticket, "attending_staff"):
                 ticket.attending_staff = assignee
             try:
-                if ticket.status in [Ticket.TicketStatus.RECEIVED, Ticket.TicketStatus.OPEN]:
+                if next_level > 0 and ticket.status in [Ticket.TicketStatus.RECEIVED, Ticket.TicketStatus.OPEN]:
                     ticket.status = Ticket.TicketStatus.IN_PROGRESS
             except Exception:
                 pass

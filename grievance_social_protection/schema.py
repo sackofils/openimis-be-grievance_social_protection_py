@@ -160,18 +160,26 @@ class Query(graphene.ObjectType):
 
 
 class Mutation(graphene.ObjectType):
-    create_Ticket = CreateTicketMutation.Field()
-    update_Ticket = UpdateTicketMutation.Field()
-    delete_Ticket = DeleteTicketMutation.Field()
+    # === Tickets ============================================================
+    create_ticket = CreateTicketMutation.Field()
+    update_ticket = UpdateTicketMutation.Field()
+    delete_ticket = DeleteTicketMutation.Field()
 
+    # === Commentaires / Résolution ==========================================
     create_comment = CreateCommentMutation.Field()
-
     resolve_grievance_by_comment = ResolveGrievanceByCommentMutation.Field()
+
+    # === Gestion de cycle de vie ============================================
     reopen_ticket = ReopenTicketMutation.Field()
     escalate_ticket = EscalateTicketMutation.Field()
+    escalate_tickets = EscalateTicketsMutation.Field()
+    resolve_tickets = ResolveTicketsMutation.Field()
 
-    # create_ticket_attachment = CreateTicketAttachmentMutation.Field()
-    # update_ticket_attachment = UpdateTicketAttachmentMutation.Field()
+    # === Export =============================================================
+    export_selected_tickets = ExportSelectedTicketsMutation.Field()
+
+    # === Dossier décès (Upload multipart) ===================================
+    update_ticket_death_dossier = UpdateTicketDeathDossierMutation.Field()
 
 
 def on_bank_mutation(kwargs, k='uuid'):

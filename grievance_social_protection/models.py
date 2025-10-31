@@ -11,6 +11,8 @@ from core.models import HistoryBusinessModel, User, HistoryModel, Role
 from location.models import Location
 from django.contrib.auth.models import Group
 from django.utils.translation import gettext_lazy as _
+from django.urls import reverse
+
 
 
 def check_if_user_or_individual(generic_field):
@@ -54,6 +56,42 @@ class EscalationStep(models.Model):
     def __str__(self):
         return f"{self.workflow.name} [{self.order}] -> {self.role.name} ({self.sla_days} j)"
 
+class TicketDeathDossier(models.Model):
+    ticket = models.OneToOneField("Ticket", on_delete=models.CASCADE, related_name="death_dossier")
+
+    # 4 cases à cocher
+    certificat_deces = models.BooleanField(default=False)
+    pv_remplacant = models.BooleanField(default=False)
+    id_nouveau_beneficiaire = models.BooleanField(default=False)
+    fiche_engagement = models.BooleanField(default=False)
+
+    # 4 fichiers (optionnel)
+    file_certificat_deces = models.FileField(upload_to="death_dossiers/", null=True, blank=True)
+    file_pv_remplacant = models.FileField(upload_to="death_dossiers/", null=True, blank=True)
+    file_id_nouveau_beneficiaire = models.FileField(upload_to="death_dossiers/", null=True, blank=True)
+    file_fiche_engagement = models.FileField(upload_to="death_dossiers/", null=True, blank=True)
+
+    # Informations sur le nouveau bénéficiaire
+    code_beneficiaire = models.CharField(max_length=32, null=True, blank=True)
+    nom_beneficiaire = models.CharField(max_length=255, null=True, blank=True)
+    prenom_beneficiaire = models.CharField(max_length=255, null=True, blank=True)
+    sexe_beneficiaire = models.CharField(max_length=10, null=True, blank=True, choices=[("M", "Masculin"), ("F", "Féminin")])
+
+    complete = models.BooleanField(default=False)
+
+    def update_completeness(self):
+        self.complete = all([
+            self.certificat_deces,
+            self.pv_remplacant,
+            self.id_nouveau_beneficiaire,
+            self.fiche_engagement,
+        ])
+        self.save(update_fields=["complete"])
+
+    def __str__(self):
+        return f"DeathDossier(ticket={self.ticket_id})"
+
+
 class Ticket(HistoryBusinessModel):
     class TicketStatus(models.TextChoices):
         # TMP FOR NOW
@@ -96,6 +134,8 @@ class Ticket(HistoryBusinessModel):
     # infos déclarant (si pas résolues via GenericFK)
     reporter_name = models.CharField(max_length=128, blank=True, null=True)
     reporter_phone = models.CharField(max_length=64, blank=True, null=True)
+
+    is_exported = models.BooleanField(default=False)
 
     escalation_level = models.PositiveSmallIntegerField(default=0, db_index=True)
     max_escalation_level = models.PositiveSmallIntegerField(default=3)  # plafond d’escalade

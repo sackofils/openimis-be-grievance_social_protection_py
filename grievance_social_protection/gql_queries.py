@@ -8,7 +8,8 @@ from location.gql_queries import LocationGQLType
 
 from core.gql_queries import UserGQLType
 from .apps import TicketConfig
-from .models import (Ticket, Comment, GrievanceType, GrievanceCategory, GrievanceSubCategory, GrievanceFlag, GrievanceChannel)
+from .models import (Ticket, Comment, GrievanceType, GrievanceCategory, GrievanceSubCategory,
+                     GrievanceFlag, GrievanceChannel, TicketDeathDossier)
 
 from core import prefix_filterset, ExtendedConnection
 from .util import model_obj_to_json
@@ -25,6 +26,84 @@ def check_comment_perms(info):
     if not (user_associated_with_ticket(user) or user.has_perms(TicketConfig.gql_query_comments_perms)):
         raise PermissionDenied(_("Unauthorized"))
 
+class TicketDeathDossierGQLType(DjangoObjectType):
+    """
+    Type GraphQL pour le modèle TicketDeathDossier.
+    Aligne strictement les champs du modèle Django,
+    avec compatibilité pour la mutation UpdateTicketDeathDossierMutation.
+    """
+
+    # Champs de fichiers avec URLs accessibles dans le frontend
+    fileCertificatDecesUrl = graphene.String()
+    filePvRemplacantUrl = graphene.String()
+    fileIdNouveauBeneficiaireUrl = graphene.String()
+    fileFicheEngagementUrl = graphene.String()
+
+    # Champs du bénéficiaire en chaîne (et non Enum)
+    sexeBeneficiaire = graphene.String()
+
+    # Champ calculé (facultatif) pour savoir si le dossier est complet
+    complete = graphene.Boolean()
+
+    class Meta:
+        model = TicketDeathDossier
+        interfaces = (graphene.relay.Node,)
+        fields = (
+            "id",
+            "certificat_deces",
+            "pv_remplacant",
+            "id_nouveau_beneficiaire",
+            "fiche_engagement",
+            "file_certificat_deces",
+            "file_pv_remplacant",
+            "file_id_nouveau_beneficiaire",
+            "file_fiche_engagement",
+            "code_beneficiaire",
+            "nom_beneficiaire",
+            "prenom_beneficiaire",
+            "sexe_beneficiaire",
+        )
+
+    # === Résolveurs de champs ===
+
+    def resolve_fileCertificatDecesUrl(self, info):
+        if self.file_certificat_deces:
+            return info.context.build_absolute_uri(self.file_certificat_deces.url)
+        return None
+
+    def resolve_filePvRemplacantUrl(self, info):
+        if self.file_pv_remplacant:
+            return info.context.build_absolute_uri(self.file_pv_remplacant.url)
+        return None
+
+    def resolve_fileIdNouveauBeneficiaireUrl(self, info):
+        if self.file_id_nouveau_beneficiaire:
+            return info.context.build_absolute_uri(self.file_id_nouveau_beneficiaire.url)
+        return None
+
+    def resolve_fileFicheEngagementUrl(self, info):
+        if self.file_fiche_engagement:
+            return info.context.build_absolute_uri(self.file_fiche_engagement.url)
+        return None
+
+    def resolve_sexeBeneficiaire(self, info):
+        """
+        Retourne la valeur texte du sexe bénéficiaire,
+        utile si le champ est stocké en CharField (et non Enum).
+        """
+        return getattr(self, "sexe_beneficiaire", None)
+
+    def resolve_complete(self, info):
+        """
+        Calcule si le dossier est complet.
+        """
+        return (
+            self.certificat_deces
+            and self.pv_remplacant
+            and self.id_nouveau_beneficiaire
+            and self.fiche_engagement
+        )
+
 
 class TicketGQLType(DjangoObjectType):
     # TODO on resolve check filters and remove anonymized so user can't fetch ticket using last_name if not visible
@@ -37,6 +116,16 @@ class TicketGQLType(DjangoObjectType):
     reporter_first_name = graphene.String()
     reporter_last_name = graphene.String()
     reporter_dob = graphene.String()
+    death_dossier = graphene.Field(
+        TicketDeathDossierGQLType,
+        name="deathDossier"
+    )
+
+    @staticmethod
+    def resolve_death_dossier(root, info):
+        check_ticket_perms(info)
+        from .models import TicketDeathDossier
+        return TicketDeathDossier.objects.filter(ticket=root).first()
 
     @staticmethod
     def resolve_reporter_type(root, info):
@@ -123,9 +212,12 @@ class TicketGQLType(DjangoObjectType):
             "channel": ["exact", "istartswith", "icontains", "iexact"],
             "resolution": ["exact", "istartswith", "icontains", "iexact"],
             'reporter_id': ["exact"],
+            "is_exported": ["exact"],
             "due_date": ["exact", "istartswith", "icontains", "iexact"],
             "date_of_incident": ["exact", "istartswith", "icontains", "iexact"],
             "date_created": ["exact", "istartswith", "icontains", "iexact"],
+            "sub_category": ["exact", "istartswith", "icontains", "iexact"],
+            "sub_category_level1": ["exact", "istartswith", "icontains", "iexact"],
             **prefix_filterset("location__", LocationGQLType._meta.filter_fields),
             **prefix_filterset("attending_staff__", UserGQLType._meta.filter_fields),
         }
