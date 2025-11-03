@@ -145,16 +145,16 @@ def _most_specific_location_from_ticket(ticket):
 
 
 @staticmethod
-def _district_from_any_location(loc):
+def _administrative_level_from_any_location(loc, type='D'):
     """Monte dans la hiérarchie pour trouver le district parent."""
     if not loc:
         return None
-    if loc.type == "D":
+    if loc.type == type:
         return loc
     cur = loc
     while getattr(cur, "parent", None):
         cur = cur.parent
-        if getattr(cur, "type", None) == "D":
+        if getattr(cur, "type", None) == type:
             return cur
     return None
 
@@ -183,12 +183,23 @@ def _choose_assignee(role: Role, ticket):
 
     # Localisation du ticket
     target_loc = _most_specific_location_from_ticket(ticket)
-    target_district = _district_from_any_location(target_loc)
+
+    # 1. Municipalité exact
+    target_location = _administrative_level_from_any_location(target_loc, 'W')
+    if target_location:
+        candidates = (
+            base_qs.filter(user__usermunicipality__location=target_location)
+            .order_by("-user__last_login", "id")
+            .distinct()
+        )
+        if candidates.exists():
+            return _as_django_user(candidates.first().user) if candidates.first() else None
 
     # 1. District exact
-    if target_district:
+    target_location = _administrative_level_from_any_location(target_loc, 'D')
+    if target_location:
         candidates = (
-            base_qs.filter(user__userdistrict__location=target_district)
+            base_qs.filter(user__userdistrict__location=target_location)
             .order_by("-user__last_login", "id")
             .distinct()
         )
