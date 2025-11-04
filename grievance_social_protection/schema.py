@@ -106,13 +106,14 @@ class Query(graphene.ObjectType):
 
             # 2. Tickets où l'utilisateur apparaît dans le workflow JSON
             #    (filtrage par UUID exact ou par rôle)
-            q_json = Q(json_ext__workflow__history__contains=[{"to_user_id": str(user.uuid)}])
+            q_json = Q()
 
             # 3. Ajout de ses rôles dans les clés 'to_role' et 'assignee_role'
             for role_name in user_roles_upper:
                 q_json |= Q(json_ext__workflow__assignee_role=role_name)
                 q_json |= Q(json_ext__workflow__history__contains=[{"to_role": role_name}])
 
+            q_json = Q(Q(json_ext__workflow__history__contains=[{"to_user_id": str(user.uuid)}]) & q_json)
             # Combine les deux filtres (utilisateur + workflow)
             query = query.filter(q_user | q_json).distinct()
 
