@@ -95,7 +95,7 @@ class Query(graphene.ObjectType):
         roles = list(user.user_roles.values_list("role__name", flat=True)) if hasattr(user, "user_roles") else []
         user_roles_upper = [r.upper() for r in roles]
 
-        full_access_roles = {"CNGR", "DEVOPS", "SAUVEGARDES"}
+        full_access_roles = {"CNGR", "DEVOPS", "SAUVEGARDES", "SAUV", "SAUVEGARDE"}
 
         if not user.is_superuser and not (set(user_roles_upper) & full_access_roles):
             username = user.login_name
@@ -110,10 +110,11 @@ class Query(graphene.ObjectType):
 
             # 3. Ajout de ses rôles dans les clés 'to_role' et 'assignee_role'
             for role_name in user_roles_upper:
-                q_json |= Q(json_ext__workflow__assignee_role=role_name)
+            #    q_json |= Q(json_ext__workflow__assignee_role=role_name)
                 q_json |= Q(json_ext__workflow__history__contains=[{"to_role": role_name}])
 
-            q_json = Q(Q(json_ext__workflow__history__contains=[{"to_user_id": str(user.uuid)}]) & q_json)
+            q_json = Q(Q(json_ext__workflow__history__contains=[{"by": user.username}]) & q_json)
+            #q_json = Q(Q(json_ext__workflow__history__contains=[{"to_user_id": str(user.uuid)}]) & q_json)
             # Combine les deux filtres (utilisateur + workflow)
             query = query.filter(q_user | q_json).distinct()
 
