@@ -14,6 +14,7 @@ from .models import (Ticket, Comment, GrievanceType, GrievanceCategory, Grievanc
 from core import prefix_filterset, ExtendedConnection
 from .util import model_obj_to_json
 from .validations import user_associated_with_ticket
+from django.conf import settings
 
 
 def check_ticket_perms(info):
@@ -362,7 +363,7 @@ class GrievanceCategoryGQL(DjangoObjectType):
 
     class Meta:
         model = GrievanceCategory
-        fields = ("id", "code", "name", "order", "active", "parent", "workflow")
+        fields = ("id", "code", "name", "order", "active", "parent", "workflow", "sla")
 
     def resolve_subCategories(self, info):
         return self.sub_categories.filter(active=True).order_by("order", "name")
@@ -465,7 +466,7 @@ class GrievanceTypeConfigurationGQLType(ObjectType):
             form = KoboForm.objects.filter(is_active=True, module="grievance_social_protection").first()
             if form and form.form_uid:
                 # return f"{form.api_key.url_kobo.rstrip('/')}/x/{form.form_uid}"
-                return f"https://ee-eu.kobotoolbox.org/x/{form.form_uid}"
+                return f"{settings.KOBO_URL}/x/{form.form_uid}"
         except Exception:
             pass
         return None

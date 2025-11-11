@@ -19,6 +19,8 @@ def add_dashes(input_string):
         The modified string with dashes.
     """
     # Create a list of 3-character chunks using a list comprehension
+    if input_string is None:
+        return ""
     chunks = [input_string[i:i + 3] for i in range(0, len(input_string), 3)]
 
     # Join the chunks with a dash
@@ -64,6 +66,7 @@ def export_selected_tickets_xlsx(ids):
         death = getattr(t, "death_dossier", None)
         json_ext = t.json_ext or {}
         loc_info = prepare_location(t.location)
+        individual = None
         if t.household_code:
             individual = Individual.objects.filter(json_ext__id_ben_principal=add_dashes(t.household_code)).first()
 
@@ -74,7 +77,7 @@ def export_selected_tickets_xlsx(ids):
             "Préfecture": loc_info.get("prefecture", ""),
             "Sous-préfecture": loc_info.get("sous_prefecture", ""),
             "District": loc_info.get("district", ""),
-            "NON BENEFICIAIRE": str(individual),
+            "NON BENEFICIAIRE": str(individual) if individual else "",
             "Sexe": individual.json_ext.get("sexe_bp", "") if individual else "",
             # "Titre": t.title,
             # "Catégorie": t.category,

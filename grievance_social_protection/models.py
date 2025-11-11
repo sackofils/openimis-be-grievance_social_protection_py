@@ -258,6 +258,7 @@ class GrievanceCategory(models.Model):
     order = models.PositiveIntegerField(default=0)
     active = models.BooleanField(default=True)
     workflow = models.JSONField(default=dict, null=True)
+    sla = models.PositiveIntegerField(default=21)
 
     class Meta:
         unique_together = (("parent", "code"),)
