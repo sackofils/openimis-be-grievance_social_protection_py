@@ -13,8 +13,10 @@ from grievance_social_protection.apps import TicketConfig
 from .serializers import ExportSelectedTicketsSerializer
 
 from django.http import FileResponse, Http404
+import re
 import os
 from django.conf import settings
+from django.db.models import Q
 
 def download_export(request, filename):
     path = os.path.join(settings.MEDIA_ROOT, "exports", filename)
@@ -67,55 +69,66 @@ def upload_death_dossier(request):
     })
 
 class ExportSelectedTicketsAPIView(APIView):
-    """
-    Endpoint REST pour exporter les tickets sélectionnés ou simuler l'export (dry_run).
-    """
-
-    #permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
         serializer = ExportSelectedTicketsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
         user = request.user
 
         if not user.has_perms(TicketConfig.gql_query_tickets_perms):
             return Response({"detail": _("unauthorized")}, status=status.HTTP_403_FORBIDDEN)
 
-        raw_ids = serializer.validated_data.get("ticket_ids", [])
         dry_run = serializer.validated_data.get("dry_run", False)
-        valid_ids = []
-        for rid in raw_ids:
-            try:
-                valid_ids.append(uuid.UUID(str(rid)))
-            except Exception:
-                continue
+        select_all = serializer.validated_data.get("select_all", False)
+        filters = serializer.validated_data.get("filters", [])
+        raw_ids = serializer.validated_data.get("ticket_ids", [])
 
-        if not valid_ids:
-            return Response(
-                {"detail": _("No valid ticket UUIDs provided")},
-                status=status.HTTP_400_BAD_REQUEST,
+        # MODE GLOBAL PAR FILTRE
+        if select_all:
+            queryset = self.apply_filters(filters)
+
+            if not queryset.exists():
+                return Response(
+                    {"detail": _("No matching tickets found")},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            tickets = list(
+                queryset.values(
+                    "id", "resolution", "sub_category", "sub_category_level1"
+                )
+            )
+            valid_ids = [t["id"] for t in tickets]
+
+        # MODE SELECTION MANUELLE
+        else:
+            valid_ids = []
+            for rid in raw_ids:
+                try:
+                    valid_ids.append(uuid.UUID(str(rid)))
+                except Exception:
+                    continue
+
+            if not valid_ids:
+                return Response(
+                    {"detail": _("No valid ticket UUIDs provided")},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            tickets = list(
+                Ticket.objects.filter(id__in=valid_ids).values(
+                    "id", "resolution", "sub_category", "sub_category_level1"
+                )
             )
 
-        # Imports différés pour éviter les dépendances circulaires
-        from .exports import (
-            export_selected_tickets_xlsx,
-            export_plainte_code_errone_xlsx,
-            export_plainte_reactivation_sim_xlsx,
-        )
+            if not tickets:
+                return Response(
+                    {"detail": _("No matching tickets found")},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
-        tickets = list(
-            Ticket.objects.filter(id__in=valid_ids).values(
-                "id", "resolution", "sub_category", "sub_category_level1"
-            )
-        )
-
-        if not tickets:
-            return Response(
-                {"detail": _("No matching tickets found")},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        # Regroupement des tickets
+        # Regroupement identique à ton code actuel
         grouped = {"reactivation": [], "code_errone": [], "autre": []}
 
         for t in tickets:
@@ -133,26 +146,26 @@ class ExportSelectedTicketsAPIView(APIView):
             elif "décès" in sub or "deces" in sub:
                 grouped["autre"].append(t["id"])
 
-        # Mode simulation : on ne génère rien
         if dry_run:
             total = sum(len(v) for v in grouped.values())
             return Response(
                 {
                     "success": True,
                     "dry_run": True,
-                    "groups": {
-                        "reactivation": len(grouped["reactivation"]),
-                        "code_errone": len(grouped["code_errone"]),
-                        "autre": len(grouped["autre"]),
-                    },
+                    "groups": {k: len(v) for k, v in grouped.items()},
                     "count": total,
                     "message": str(_("Dry run completed — no files generated.")),
-                },
-                status=status.HTTP_200_OK,
+                }
             )
 
-        # Export réel
+        from .exports import (
+            export_selected_tickets_xlsx,
+            export_plainte_code_errone_xlsx,
+            export_plainte_reactivation_sim_xlsx,
+        )
+
         file_urls = []
+
         if grouped["reactivation"]:
             file_urls.append(export_plainte_reactivation_sim_xlsx(grouped["reactivation"]))
         if grouped["code_errone"]:
@@ -160,7 +173,6 @@ class ExportSelectedTicketsAPIView(APIView):
         if grouped["autre"]:
             file_urls.append(export_selected_tickets_xlsx(grouped["autre"]))
 
-        # Marque les tickets comme exportés
         Ticket.objects.filter(id__in=valid_ids).update(is_exported=True)
 
         return Response(
@@ -168,7 +180,48 @@ class ExportSelectedTicketsAPIView(APIView):
                 "success": True,
                 "dry_run": False,
                 "files": file_urls,
+                "count": len(valid_ids),
                 "message": str(_("Exports generated successfully")),
-            },
-            status=status.HTTP_200_OK,
+            }
         )
+
+    def apply_filters(self, filters):
+        qs = Ticket.objects.all()
+
+        for f in filters:
+            try:
+                # Exemple: category_Icontains: "Cas speciaux"
+                match = re.match(r'(\w+?)(?:_(\w+))?\s*:\s*"?(.+?)"?$', f)
+                if not match:
+                    continue
+
+                field, operator, value = match.groups()
+
+                if not operator:
+                    # égalité simple
+                    qs = qs.filter(**{field: value})
+                else:
+                    operator = operator.lower()
+
+                    if operator == "icontains":
+                        qs = qs.filter(**{f"{field}__icontains": value})
+                    elif operator == "contains":
+                        qs = qs.filter(**{f"{field}__contains": value})
+                    elif operator == "exact":
+                        qs = qs.filter(**{f"{field}__exact": value})
+                    elif operator == "startswith":
+                        qs = qs.filter(**{f"{field}__startswith": value})
+                    elif operator == "gte":
+                        qs = qs.filter(**{f"{field}__gte": value})
+                    elif operator == "lte":
+                        qs = qs.filter(**{f"{field}__lte": value})
+                    else:
+                        # fallback = icontains
+                        qs = qs.filter(**{f"{field}__icontains": value})
+
+            except Exception as e:
+                print("Filter parse error:", f, e)
+                continue
+
+        return qs
+
