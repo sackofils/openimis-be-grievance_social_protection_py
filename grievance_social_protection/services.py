@@ -17,7 +17,11 @@ from grievance_social_protection.validations import (
     CommentValidation,
     validate_resolution
 )
-from grievance_social_protection.escalation_helper import (escalate_ticket)
+from grievance_social_protection.escalation_helper import (
+    escalate_ticket,
+    reset_workflow_after_resolution,
+    _send_resolution_notifications,
+)
 from django.contrib.auth import get_user_model
 
 
@@ -159,10 +163,19 @@ class CommentService:
                 self.validation_class.validate_resolve_grievance_by_comment(self.user, **obj_data)
                 comment = Comment.objects.filter(id=obj_data.get('id')).first()
                 ticket = comment.ticket
+                previous_assignee = ticket.attending_staff
                 ticket.status = Ticket.TicketStatus.CLOSED
                 comment.is_resolution = True
-                ticket.save(username=self.user.username)
+                reset_workflow_after_resolution(ticket, username=self.user.username)
                 comment.save(username=self.user.username)
+                transaction.on_commit(
+                    lambda: _send_resolution_notifications(
+                        ticket=ticket,
+                        comment=comment,
+                        triggered_by=self.user.username,
+                        current_assignee=previous_assignee,
+                    )
+                )
                 return {
                     "success": True,
                     "message": "Ok",

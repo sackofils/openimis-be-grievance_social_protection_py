@@ -41,6 +41,27 @@ class GQLTicketResolveByCommentTestCase(openIMISGraphQLTestCase):
         cls.gql_context = BaseTestContext(cls.user)
 
     def test_resolve_ticket_by_comment_success(self):
+        self.existing_ticket.attending_staff = self.user
+        self.existing_ticket.json_ext = {
+            "workflow": {
+                "assignee_role": "CGR",
+                "escalation_level": 2,
+                "last_escalated_at": "2026-05-18T10:00:00",
+                "history": [
+                    {
+                        "at": "2026-05-17T10:00:00",
+                        "by": "agent_a",
+                        "to_role": "CGR",
+                        "to_user_id": str(self.user.id),
+                        "to_user_fullname": "User Authorized",
+                        "source": "workflow=test",
+                        "sla_days": 2,
+                    }
+                ],
+            }
+        }
+        self.existing_ticket.save(user=self.user)
+
         mutation_id = "99g154h5b92h11sd33"
         payload = gql_mutation_resolve_ticket_by_comment % (
             self.existing_comment.id,
@@ -54,3 +75,5 @@ class GQLTicketResolveByCommentTestCase(openIMISGraphQLTestCase):
         self.assertFalse(mutation_log.error)
         self.assertEquals(comment.is_resolution, True)
         self.assertEquals(ticket.status, self.status)
+        self.assertEquals(ticket.json_ext["workflow"]["escalation_level"], 0)
+        self.assertGreaterEqual(len(ticket.json_ext["workflow"]["history"]), 1)
